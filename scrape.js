@@ -5,6 +5,36 @@ const { exec } = require('child_process');
 const util = require('util');
 const execAsync = util.promisify(exec);
 
+const LOG_FILE = path.join(process.cwd(), 'scrape.log');
+const MISSING_FILES_LOG = path.join(process.cwd(), 'missing_files.log');
+
+function ts() {
+  return new Date().toISOString();
+}
+
+function log(msg) {
+  const line = `[${ts()}] ${msg}`;
+  console.log(line);
+  fs.appendFileSync(LOG_FILE, line + '\n');
+}
+
+function logWarn(msg) {
+  const line = `[${ts()}] WARN: ${msg}`;
+  console.warn(line);
+  fs.appendFileSync(LOG_FILE, line + '\n');
+}
+
+function logError(msg) {
+  const line = `[${ts()}] ERROR: ${msg}`;
+  console.error(line);
+  fs.appendFileSync(LOG_FILE, line + '\n');
+}
+
+function logMissingFile(url, reason, context) {
+  const line = `[${ts()}] ${context ? `[${context}] ` : ''}${url} | ${reason}\n`;
+  fs.appendFileSync(MISSING_FILES_LOG, line);
+}
+
 const BASE_URL = 'https://posztok.hu';
 
 function resolveDataDir() {
@@ -33,27 +63,36 @@ async function fetchPage(url) {
   }
 }
 
-async function downloadFile(url, dest) {
-  if (fs.existsSync(dest)) return;
+async function downloadFile(url, dest, context) {
+  if (fs.existsSync(dest)) return null;
   try {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`Failed to download ${url}: ${response.statusText}`);
     const buffer = Buffer.from(await response.arrayBuffer());
     fs.writeFileSync(dest, buffer);
+    return null;
   } catch (error) {
-    console.error(`Error downloading ${url}:`, error.message);
+    const msg = `Error downloading ${url}: ${error.message}`;
+    logError(msg);
+    logMissingFile(url, error.message, context);
+    return { url, error: error.message };
   }
 }
 
-async function downloadVideo(url, destDir, filename) {
+async function downloadVideo(url, destDir, filename, context) {
   const destPath = path.join(destDir, `${filename}.mp4`);
-  if (fs.existsSync(destPath)) return;
+  if (fs.existsSync(destPath)) return null;
   try {
     if (url.includes('facebook.com') || url.includes('youtube.com') || url.includes('reel')) {
+      log(`  Downloading video: ${url}`);
       await execAsync(`yt-dlp -o "${destPath}" "${url}" --quiet --no-warnings --no-playlist`);
     }
+    return null;
   } catch (error) {
-    // console.error(`\n    Failed to download video ${url}:`, error.message);
+    const msg = `Failed to download video ${url}: ${error.message}`;
+    logError(msg);
+    logMissingFile(url, error.message, context);
+    return { url, error: error.message };
   }
 }
 
@@ -134,6 +173,7 @@ function parsePosts(html) {
 }
 
 async function getSources() {
+  log(`Fetching sources from ${BASE_URL}/`);
   const html = await fetchPage(`${BASE_URL}/`);
   if (!html) return [];
   const $ = cheerio.load(html);
@@ -158,9 +198,12 @@ async function getSources() {
       .map((l) => l.split('/').pop());
 
     const validSet = new Set(validLinks);
-    return sources.filter((s) => validSet.has(s.slug));
+    const filtered = sources.filter((s) => validSet.has(s.slug));
+    log(`Filtered to ${filtered.length} sources from posztok_links.txt`);
+    return filtered;
   }
 
+  log(`Found ${sources.length} sources`);
   return sources;
 }
 
@@ -206,7 +249,7 @@ async function scrapeUser(source) {
   if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
   if (!fs.existsSync(mediaDir)) fs.mkdirSync(mediaDir, { recursive: true });
 
-  console.log(`Scraping user archive: ${source.name} (${source.slug})...`);
+  log(`Scraping user archive: ${source.name} (${source.slug})...`);
   const url = `${BASE_URL}/s/${source.slug}`;
   const html = await fetchPage(url);
   if (!html) return;
@@ -223,10 +266,10 @@ async function scrapeUser(source) {
           .map((p) => parseInt(p.id))
           .filter((n) => !isNaN(n))
           .reduce((min, n) => (n < min ? n : min), Infinity);
-        console.log(`  Resuming from existing archive: ${allPosts.length} posts, lastId=${resumeLastId}`);
+        log(`  Resuming from existing archive: ${allPosts.length} posts, lastId=${resumeLastId}`);
       }
     } catch (e) {
-      console.warn(`  Could not parse existing ${source.slug}.json, starting fresh:`, e.message);
+      logWarn(`Could not parse existing ${source.slug}.json, starting fresh: ${e.message}`);
     }
   }
 
@@ -242,16 +285,25 @@ async function scrapeUser(source) {
     }
     const firstPageMediaTasks = [];
     for (const post of allPosts) {
+      post.download_errors = post.download_errors || [];
       for (const m of post.media) {
         if (m.type === 'image') {
           const ext = path.extname(m.url.split('?')[0]) || '.jpg';
           const filename = `${post.id}_${Math.random().toString(36).substring(7)}${ext}`;
           const dest = path.join(mediaDir, filename);
-          firstPageMediaTasks.push(downloadFile(m.url, dest));
+          firstPageMediaTasks.push(
+            downloadFile(m.url, dest, source.slug).then((err) => {
+              if (err) post.download_errors.push(err);
+            }),
+          );
           m.local_path = `media/${filename}`;
         } else if (m.type === 'video') {
           const vidFilename = `${post.id}_video`;
-          firstPageMediaTasks.push(downloadVideo(m.url, mediaDir, vidFilename));
+          firstPageMediaTasks.push(
+            downloadVideo(m.url, mediaDir, vidFilename, source.slug).then((err) => {
+              if (err) post.download_errors.push(err);
+            }),
+          );
           m.local_path = `media/${vidFilename}.mp4`;
         }
       }
@@ -267,7 +319,7 @@ async function scrapeUser(source) {
     const sourceId = sourceIdMatch[1];
     let lastId = resumeLastId !== null ? String(resumeLastId) : lastPostIdMatch[1];
 
-    console.log(`  Archive crawl started for ${source.slug}. sourceId: ${sourceId}, lastId: ${lastId}`);
+    log(`  Archive crawl started for ${source.slug}. sourceId: ${sourceId}, lastId: ${lastId}`);
 
     let hasMore = true;
     while (hasMore) {
@@ -297,16 +349,25 @@ async function scrapeUser(source) {
       const mediaTasks = [];
       for (const post of newPosts) {
         post.date_iso = parseHungarianDate(post.date);
+        post.download_errors = post.download_errors || [];
         for (const m of post.media) {
           if (m.type === 'image') {
             const ext = path.extname(m.url.split('?')[0]) || '.jpg';
             const filename = `${post.id}_${Math.random().toString(36).substring(7)}${ext}`;
             const dest = path.join(mediaDir, filename);
-            mediaTasks.push(downloadFile(m.url, dest));
+            mediaTasks.push(
+              downloadFile(m.url, dest, source.slug).then((err) => {
+                if (err) post.download_errors.push(err);
+              }),
+            );
             m.local_path = `media/${filename}`;
           } else if (m.type === 'video') {
             const vidFilename = `${post.id}_video`;
-            mediaTasks.push(downloadVideo(m.url, mediaDir, vidFilename));
+            mediaTasks.push(
+              downloadVideo(m.url, mediaDir, vidFilename, source.slug).then((err) => {
+                if (err) post.download_errors.push(err);
+              }),
+            );
             m.local_path = `media/${vidFilename}.mp4`;
           }
         }
@@ -316,25 +377,27 @@ async function scrapeUser(source) {
       allPosts = allPosts.concat(newPosts);
       lastId = newPosts[newPosts.length - 1].id;
       savePosts(userDir, source, allPosts);
-      process.stdout.write(`\r    Total posts collected: ${allPosts.length}...`);
+      const errorCount = allPosts.reduce((n, p) => n + (p.download_errors ? p.download_errors.length : 0), 0);
+      process.stdout.write(`\r    Total posts collected: ${allPosts.length}, download errors so far: ${errorCount}...`);
     }
-    console.log(`\n  Finished archive for ${source.slug}.`);
+    log(`\n  Finished archive for ${source.slug}.`);
   }
 
   savePosts(userDir, source, allPosts);
-  console.log(`  Archive saved to ${source.slug}/${source.slug}.json (${allPosts.length} posts)`);
+  const totalErrors = allPosts.reduce((n, p) => n + (p.download_errors ? p.download_errors.length : 0), 0);
+  log(`  Archive saved to ${source.slug}/${source.slug}.json (${allPosts.length} posts, ${totalErrors} download errors)`);
 }
 
 async function checkYtDlp() {
   try {
     const { stdout } = await execAsync('yt-dlp --version');
-    console.log(`yt-dlp detected (version ${stdout.trim()}).`);
+    log(`yt-dlp detected (version ${stdout.trim()}).`);
     return true;
   } catch {
-    console.warn(
-      'WARNING: yt-dlp not found on PATH. Video posts will be skipped. Install with `brew install yt-dlp` or see https://github.com/yt-dlp/yt-dlp.',
+    logWarn(
+      'yt-dlp not found on PATH. Video posts will be skipped. Install with `brew install yt-dlp` or see https://github.com/yt-dlp/yt-dlp.',
     );
-    process.exit(1)
+    process.exit(1);
   }
 }
 
@@ -354,11 +417,12 @@ async function withConcurrency(tasks, limit) {
 
 async function main() {
   await checkYtDlp();
+  log(`Starting scrape. Log: ${LOG_FILE}, Missing files log: ${MISSING_FILES_LOG}`);
   const allSources = await getSources();
   const groupArg = process.argv[2];
 
   if (!groupArg || (groupArg !== '1' && groupArg !== '2')) {
-    console.log('Please specify group 1 or 2: bun run scrape.js 1');
+    log('Please specify group 1 or 2: bun run scrape.js 1');
     return;
   }
 
@@ -368,9 +432,8 @@ async function main() {
   const mid = Math.ceil(allSources.length / 2);
   const sources = groupArg === '1' ? allSources.slice(0, mid) : allSources.slice(mid);
 
-  console.log(`Group ${groupArg}: Processing ${sources.length} sources with concurrency=${concurrency}:`);
-  sources.forEach((s, i) => console.log(`  ${i + 1}. ${s.name} (${s.slug})`));
-  console.log('');
+  log(`Group ${groupArg}: Processing ${sources.length} sources with concurrency=${concurrency}:`);
+  sources.forEach((s, i) => log(`  ${i + 1}. ${s.name} (${s.slug})`));
 
   const tasks = sources.map((source) => async () => {
     await scrapeUser(source);
@@ -379,7 +442,7 @@ async function main() {
 
   await withConcurrency(tasks, concurrency);
 
-  console.log(`Group ${groupArg} archive completed.`);
+  log(`Group ${groupArg} archive completed.`);
 }
 
 main();
