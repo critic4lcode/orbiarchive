@@ -203,41 +203,63 @@ async function scrapeUser(source) {
   const html = await fetchPage(url);
   if (!html) return;
 
-  let allPosts = parsePosts(html);
-  for (const post of allPosts) {
-    if (post.continuation_url) {
-      await sleep(100);
-      const full = await fetchFullContent(post.continuation_url);
-      if (full) post.content = full;
+  const jsonPath = path.join(userDir, `${source.slug}.json`);
+  let allPosts = [];
+  let resumeLastId = null;
+  if (fs.existsSync(jsonPath)) {
+    try {
+      const existing = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+      if (Array.isArray(existing.posts) && existing.posts.length > 0) {
+        allPosts = existing.posts;
+        resumeLastId = allPosts
+          .map((p) => parseInt(p.id))
+          .filter((n) => !isNaN(n))
+          .reduce((min, n) => (n < min ? n : min), Infinity);
+        console.log(`  Resuming from existing archive: ${allPosts.length} posts, lastId=${resumeLastId}`);
+      }
+    } catch (e) {
+      console.warn(`  Could not parse existing ${source.slug}.json, starting fresh:`, e.message);
     }
-    post.date_iso = parseHungarianDate(post.date);
   }
-  const firstPageMediaTasks = [];
-  for (const post of allPosts) {
-    for (const m of post.media) {
-      if (m.type === 'image') {
-        const ext = path.extname(m.url.split('?')[0]) || '.jpg';
-        const filename = `${post.id}_${Math.random().toString(36).substring(7)}${ext}`;
-        const dest = path.join(mediaDir, filename);
-        firstPageMediaTasks.push(downloadFile(m.url, dest));
-        m.local_path = `media/${filename}`;
-      } else if (m.type === 'video') {
-        const vidFilename = `${post.id}_video`;
-        firstPageMediaTasks.push(downloadVideo(m.url, mediaDir, vidFilename));
-        m.local_path = `media/${vidFilename}.mp4`;
+
+  if (resumeLastId === null) {
+    allPosts = parsePosts(html);
+    for (const post of allPosts) {
+      if (post.continuation_url) {
+        await sleep(100);
+        const full = await fetchFullContent(post.continuation_url);
+        if (full) post.content = full;
+      }
+      post.date_iso = parseHungarianDate(post.date);
+    }
+    const firstPageMediaTasks = [];
+    for (const post of allPosts) {
+      for (const m of post.media) {
+        if (m.type === 'image') {
+          const ext = path.extname(m.url.split('?')[0]) || '.jpg';
+          const filename = `${post.id}_${Math.random().toString(36).substring(7)}${ext}`;
+          const dest = path.join(mediaDir, filename);
+          firstPageMediaTasks.push(downloadFile(m.url, dest));
+          m.local_path = `media/${filename}`;
+        } else if (m.type === 'video') {
+          const vidFilename = `${post.id}_video`;
+          firstPageMediaTasks.push(downloadVideo(m.url, mediaDir, vidFilename));
+          m.local_path = `media/${vidFilename}.mp4`;
+        }
       }
     }
+    await Promise.all(firstPageMediaTasks);
+    savePosts(userDir, source, allPosts);
   }
-  await Promise.all(firstPageMediaTasks);
-  savePosts(userDir, source, allPosts);
+
   const sourceIdMatch = html.match(/initInfiniteScrollForSource\((\d+)\)/);
   const lastPostIdMatch = html.match(/document\.lastPostId = (\d+);/);
 
-  if (sourceIdMatch && lastPostIdMatch) {
+  if (sourceIdMatch && (lastPostIdMatch || resumeLastId !== null)) {
     const sourceId = sourceIdMatch[1];
-    let lastId = lastPostIdMatch[1];
+    let lastId = resumeLastId !== null ? String(resumeLastId) : lastPostIdMatch[1];
 
-    console.log(`  Archive crawl started for ${source.slug}. sourceId: ${sourceId}`);
+    console.log(`  Archive crawl started for ${source.slug}. sourceId: ${sourceId}, lastId: ${lastId}`);
 
     let hasMore = true;
     while (hasMore) {
