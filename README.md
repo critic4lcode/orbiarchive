@@ -106,4 +106,4 @@ bash sync_media.sh
 bash sync_media.sh --data-dir=/mnt/data
 ```
 
-Files are moved (not copied) using `rsync --remove-source-files` to free up local disk space after transfer.
+Files are moved (not copied) using `mv` directly to the remote mount, freeing up local disk space immediately. If a file already exists at the destination it is removed from local storage without overwriting.

@@ -49,14 +49,25 @@ for media_dir in "${DATA_DIR}"/*/media; do
 
   log "  Syncing ${page_name}/media -> ${dest_dir}"
 
-  if rsync -a --ignore-existing --remove-source-files \
-      "$media_dir/" "$dest_dir/" \
-      2>> "$LOG_FILE"; then
-    count=$(find "$dest_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')
-    log "  OK: ${page_name}/media synced (${count} files in dest)"
+  file_count=0
+  error_count=0
+  while IFS= read -r -d '' file; do
+    dest_file="${dest_dir}/$(basename "$file")"
+    if [[ -e "$dest_file" ]]; then
+      rm -f "$file"
+    elif mv "$file" "$dest_file" 2>> "$LOG_FILE"; then
+      ((file_count++)) || true
+    else
+      log "  ERROR: failed to move $(basename "$file")"
+      ((error_count++)) || true
+    fi
+  done < <(find "$media_dir" -maxdepth 1 -type f -print0)
+
+  if [[ $error_count -eq 0 ]]; then
+    log "  OK: ${page_name}/media — moved ${file_count} files to ${dest_dir}"
     ((synced++)) || true
   else
-    log "  ERROR: rsync failed for ${page_name}/media"
+    log "  WARN: ${page_name}/media — moved ${file_count} files, ${error_count} errors"
     ((errors++)) || true
   fi
 done
