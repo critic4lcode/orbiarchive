@@ -6,10 +6,18 @@ const util = require('util');
 const execAsync = util.promisify(exec);
 
 const BASE_URL = 'https://posztok.hu';
-const DATA_DIR = path.join(__dirname, 'data');
+
+function resolveDataDir() {
+  const dataDirArg = process.argv.find((a) => a.startsWith('--data-dir='));
+  if (dataDirArg) return path.resolve(dataDirArg.split('=')[1]);
+  if (process.env.DATA_DIR) return path.resolve(process.env.DATA_DIR);
+  return path.join(__dirname, 'data');
+}
+
+const DATA_DIR = resolveDataDir();
 
 if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR);
+  fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
