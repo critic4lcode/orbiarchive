@@ -338,6 +338,20 @@ async function checkYtDlp() {
   }
 }
 
+async function withConcurrency(tasks, limit) {
+  const results = [];
+  const executing = new Set();
+  for (const task of tasks) {
+    const p = Promise.resolve().then(task).finally(() => executing.delete(p));
+    executing.add(p);
+    results.push(p);
+    if (executing.size >= limit) {
+      await Promise.race(executing);
+    }
+  }
+  return Promise.all(results);
+}
+
 async function main() {
   await checkYtDlp();
   const allSources = await getSources();
@@ -348,15 +362,22 @@ async function main() {
     return;
   }
 
+  const concurrencyArg = process.argv.find((a) => a.startsWith('--concurrency='));
+  const concurrency = concurrencyArg ? parseInt(concurrencyArg.split('=')[1]) : 3;
+
   const mid = Math.ceil(allSources.length / 2);
   const sources = groupArg === '1' ? allSources.slice(0, mid) : allSources.slice(mid);
 
-  console.log(`Group ${groupArg}: Processing ${sources.length} sources...`);
+  console.log(`Group ${groupArg}: Processing ${sources.length} sources with concurrency=${concurrency}:`);
+  sources.forEach((s, i) => console.log(`  ${i + 1}. ${s.name} (${s.slug})`));
+  console.log('');
 
-  for (const source of sources) {
+  const tasks = sources.map((source) => async () => {
     await scrapeUser(source);
     await sleep(500);
-  }
+  });
+
+  await withConcurrency(tasks, concurrency);
 
   console.log(`Group ${groupArg} archive completed.`);
 }
