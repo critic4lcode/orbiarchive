@@ -1,0 +1,320 @@
+const cheerio = require('cheerio');
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
+const util = require('util');
+const execAsync = util.promisify(exec);
+
+const BASE_URL = 'https://posztok.hu';
+const DATA_DIR = path.join(__dirname, 'data');
+
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function fetchPage(url) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
+    return await response.text();
+  } catch (error) {
+    console.error(`Error fetching ${url}:`, error);
+    return null;
+  }
+}
+
+async function downloadFile(url, dest) {
+  if (fs.existsSync(dest)) return;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to download ${url}: ${response.statusText}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    fs.writeFileSync(dest, buffer);
+  } catch (error) {
+    console.error(`Error downloading ${url}:`, error.message);
+  }
+}
+
+async function downloadVideo(url, destDir, filename) {
+  const destPath = path.join(destDir, `${filename}.mp4`);
+  if (fs.existsSync(destPath)) return;
+  try {
+    if (url.includes('facebook.com') || url.includes('youtube.com') || url.includes('reel')) {
+      await execAsync(`yt-dlp -o "${destPath}" "${url}" --quiet --no-warnings --no-playlist`);
+    }
+  } catch (error) {
+    // console.error(`\n    Failed to download video ${url}:`, error.message);
+  }
+}
+
+function savePosts(userDir, source, allPosts) {
+  const finalPath = path.join(userDir, `${source.slug}.json`);
+  const tmpPath = `${finalPath}.tmp`;
+  const result = {
+    metadata: source,
+    scraped_at: new Date().toISOString(),
+    posts: allPosts,
+  };
+  fs.writeFileSync(tmpPath, JSON.stringify(result, null, 2));
+  fs.renameSync(tmpPath, finalPath);
+}
+
+async function fetchFullContent(continuationUrl) {
+  const url = continuationUrl.startsWith('http') ? continuationUrl : BASE_URL + continuationUrl;
+  const html = await fetchPage(url);
+  if (!html) return null;
+  const $ = cheerio.load(html);
+  const body = $('article.post-details .wordbreak').first();
+  if (!body.length) return null;
+  return body.text().trim();
+}
+
+function parsePosts(html) {
+  const $ = cheerio.load(html);
+  const posts = [];
+
+  $('article.post').each((i, el) => {
+    const $post = $(el);
+    const metaDiv = $post.find('div[id^="arepl-"]');
+    if (!metaDiv.length) return;
+
+    const postData = {
+      id: metaDiv.attr('data-id'),
+      source_slug: metaDiv.attr('data-sn'),
+      source_name: metaDiv.attr('data-n'),
+      date: metaDiv.attr('data-d'),
+      original_url: metaDiv.attr('data-oau'),
+      local_url: metaDiv.attr('data-f'),
+      content: $post.find('.leadtextborder.wordbreak').text().trim(),
+      media: [],
+      links: [],
+    };
+
+    $post.find('figure img.imgfit').each((j, img) => {
+      const imgUrl = $(img).attr('src');
+      postData.media.push({
+        type: 'image',
+        url: imgUrl.startsWith('http') ? imgUrl : BASE_URL + imgUrl,
+      });
+    });
+
+    $post.find('.video-wrapper .fb-video').each((j, vid) => {
+      postData.media.push({
+        type: 'video',
+        url: $(vid).attr('data-href'),
+      });
+    });
+
+    $post.find('.leadtextborder.wordbreak a').each((j, link) => {
+      postData.links.push({
+        text: $(link).text().trim(),
+        url: $(link).attr('href'),
+      });
+    });
+
+    const moreLink = $post.find('.pt-1.clearfix .float-right a').first();
+    if (moreLink.length && moreLink.text().trim().startsWith('Folytatódik')) {
+      postData.continuation_url = moreLink.attr('href');
+    }
+
+    posts.push(postData);
+  });
+
+  return posts;
+}
+
+async function getSources() {
+  const html = await fetchPage(`${BASE_URL}/`);
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  const sources = [];
+
+  $('.ma-ps').each((i, el) => {
+    const $el = $(el);
+    sources.push({
+      slug: $el.attr('data-s'),
+      name: $el.attr('data-n'),
+      orig_url: $el.attr('data-o'),
+      handler: $el.attr('data-h') || 'facebook',
+    });
+  });
+
+  if (fs.existsSync('posztok_links.txt')) {
+    const validLinks = fs
+      .readFileSync('posztok_links.txt', 'utf-8')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith('https://posztok.hu/s/'))
+      .map((l) => l.split('/').pop());
+
+    const validSet = new Set(validLinks);
+    return sources.filter((s) => validSet.has(s.slug));
+  }
+
+  return sources;
+}
+
+function parseHungarianDate(dateStr) {
+  if (!dateStr) return null;
+  const now = new Date();
+  let date;
+
+  if (dateStr.startsWith('Ma')) {
+    date = new Date();
+    const timeMatch = dateStr.match(/(\d{1,2}):(\d{2})/);
+    if (timeMatch) {
+      date.setHours(parseInt(timeMatch[1]), parseInt(timeMatch[2]), 0, 0);
+    }
+  } else if (dateStr.startsWith('Tegnap')) {
+    date = new Date();
+    date.setDate(date.getDate() - 1);
+    const timeMatch = dateStr.match(/(\d{1,2}):(\d{2})/);
+    if (timeMatch) {
+      date.setHours(parseInt(timeMatch[1]), parseInt(timeMatch[2]), 0, 0);
+    }
+  } else {
+    const parts = dateStr.match(/(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{1,2}):(\d{2})/);
+    if (parts) {
+      date = new Date(
+        parseInt(parts[1]),
+        parseInt(parts[2]) - 1,
+        parseInt(parts[3]),
+        parseInt(parts[4]),
+        parseInt(parts[5]),
+      );
+    } else {
+      date = new Date(dateStr);
+    }
+  }
+  return isNaN(date.getTime()) ? dateStr : date.toISOString();
+}
+
+async function scrapeUser(source) {
+  const userDir = path.join(DATA_DIR, source.slug);
+  const mediaDir = path.join(userDir, 'media');
+
+  if (!fs.existsSync(userDir)) fs.mkdirSync(userDir, { recursive: true });
+  if (!fs.existsSync(mediaDir)) fs.mkdirSync(mediaDir, { recursive: true });
+
+  console.log(`Scraping user archive: ${source.name} (${source.slug})...`);
+  const url = `${BASE_URL}/s/${source.slug}`;
+  const html = await fetchPage(url);
+  if (!html) return;
+
+  let allPosts = parsePosts(html);
+  for (const post of allPosts) {
+    if (post.continuation_url) {
+      await sleep(100);
+      const full = await fetchFullContent(post.continuation_url);
+      if (full) post.content = full;
+    }
+    post.date_iso = parseHungarianDate(post.date);
+  }
+  const firstPageMediaTasks = [];
+  for (const post of allPosts) {
+    for (const m of post.media) {
+      if (m.type === 'image') {
+        const ext = path.extname(m.url.split('?')[0]) || '.jpg';
+        const filename = `${post.id}_${Math.random().toString(36).substring(7)}${ext}`;
+        const dest = path.join(mediaDir, filename);
+        firstPageMediaTasks.push(downloadFile(m.url, dest));
+        m.local_path = `media/${filename}`;
+      } else if (m.type === 'video') {
+        const vidFilename = `${post.id}_video`;
+        firstPageMediaTasks.push(downloadVideo(m.url, mediaDir, vidFilename));
+        m.local_path = `media/${vidFilename}.mp4`;
+      }
+    }
+  }
+  await Promise.all(firstPageMediaTasks);
+  savePosts(userDir, source, allPosts);
+  const sourceIdMatch = html.match(/initInfiniteScrollForSource\((\d+)\)/);
+  const lastPostIdMatch = html.match(/document\.lastPostId = (\d+);/);
+
+  if (sourceIdMatch && lastPostIdMatch) {
+    const sourceId = sourceIdMatch[1];
+    let lastId = lastPostIdMatch[1];
+
+    console.log(`  Archive crawl started for ${source.slug}. sourceId: ${sourceId}`);
+
+    let hasMore = true;
+    while (hasMore) {
+      await sleep(150);
+      const pagUrl = `${BASE_URL}/next-source/${sourceId}?lastId=${lastId}`;
+      const pagHtml = await fetchPage(pagUrl);
+
+      if (!pagHtml || pagHtml.trim() === '' || pagHtml.includes('post-sources-placeholder')) {
+        hasMore = false;
+        break;
+      }
+
+      const newPosts = parsePosts(pagHtml);
+      if (newPosts.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      for (const post of newPosts) {
+        if (post.continuation_url) {
+          await sleep(100);
+          const full = await fetchFullContent(post.continuation_url);
+          if (full) post.content = full;
+        }
+      }
+
+      const mediaTasks = [];
+      for (const post of newPosts) {
+        post.date_iso = parseHungarianDate(post.date);
+        for (const m of post.media) {
+          if (m.type === 'image') {
+            const ext = path.extname(m.url.split('?')[0]) || '.jpg';
+            const filename = `${post.id}_${Math.random().toString(36).substring(7)}${ext}`;
+            const dest = path.join(mediaDir, filename);
+            mediaTasks.push(downloadFile(m.url, dest));
+            m.local_path = `media/${filename}`;
+          } else if (m.type === 'video') {
+            const vidFilename = `${post.id}_video`;
+            mediaTasks.push(downloadVideo(m.url, mediaDir, vidFilename));
+            m.local_path = `media/${vidFilename}.mp4`;
+          }
+        }
+      }
+      await Promise.all(mediaTasks);
+
+      allPosts = allPosts.concat(newPosts);
+      lastId = newPosts[newPosts.length - 1].id;
+      savePosts(userDir, source, allPosts);
+      process.stdout.write(`\r    Total posts collected: ${allPosts.length}...`);
+    }
+    console.log(`\n  Finished archive for ${source.slug}.`);
+  }
+
+  savePosts(userDir, source, allPosts);
+  console.log(`  Archive saved to ${source.slug}/${source.slug}.json (${allPosts.length} posts)`);
+}
+
+async function main() {
+  const allSources = await getSources();
+  const groupArg = process.argv[2];
+
+  if (!groupArg || (groupArg !== '1' && groupArg !== '2')) {
+    console.log('Please specify group 1 or 2: bun run scrape.js 1');
+    return;
+  }
+
+  const mid = Math.ceil(allSources.length / 2);
+  const sources = groupArg === '1' ? allSources.slice(0, mid) : allSources.slice(mid);
+
+  console.log(`Group ${groupArg}: Processing ${sources.length} sources...`);
+
+  for (const source of sources) {
+    await scrapeUser(source);
+    await sleep(500);
+  }
+
+  console.log(`Group ${groupArg} archive completed.`);
+}
+
+main();
