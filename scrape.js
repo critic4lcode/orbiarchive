@@ -172,7 +172,7 @@ function parsePosts(html) {
   return posts;
 }
 
-async function getSources() {
+async function getSources(linksFile) {
   log(`Fetching sources from ${BASE_URL}/`);
   const html = await fetchPage(`${BASE_URL}/`);
   if (!html) return [];
@@ -189,9 +189,9 @@ async function getSources() {
     });
   });
 
-  if (fs.existsSync('posztok_links.txt')) {
+  if (linksFile && fs.existsSync(linksFile)) {
     const validLinks = fs
-      .readFileSync('posztok_links.txt', 'utf-8')
+      .readFileSync(linksFile, 'utf-8')
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => l.startsWith('https://posztok.hu/s/'))
@@ -199,11 +199,11 @@ async function getSources() {
 
     const validSet = new Set(validLinks);
     const filtered = sources.filter((s) => validSet.has(s.slug));
-    log(`Filtered to ${filtered.length} sources from posztok_links.txt`);
+    log(`Filtered to ${filtered.length} sources from ${linksFile}`);
     return filtered;
   }
 
-  log(`Found ${sources.length} sources`);
+  log(`Found ${sources.length} sources (no links file filter applied)`);
   return sources;
 }
 
@@ -418,21 +418,32 @@ async function withConcurrency(tasks, limit) {
 async function main() {
   await checkYtDlp();
   log(`Starting scrape. Log: ${LOG_FILE}, Missing files log: ${MISSING_FILES_LOG}`);
-  const allSources = await getSources();
-  const groupArg = process.argv[2];
 
-  if (!groupArg || (groupArg !== '1' && groupArg !== '2')) {
-    log('Please specify group 1 or 2: bun run scrape.js 1');
+  const linksArg = process.argv.find((a) => a.startsWith('--links='));
+  const linksFile = linksArg ? path.resolve(linksArg.split('=')[1]) : 'posztok_links.txt';
+  log(`Using links file: ${linksFile}${fs.existsSync(linksFile) ? '' : ' (not found, skipping filter)'}`);
+
+  const allSources = await getSources(linksFile);
+  const groupArg = process.argv.find((a) => /^[012]$/.test(a));
+
+  if (!groupArg) {
+    log('Please specify group: 0 (all), 1 (first half), or 2 (second half): bun run scrape.js 0');
     return;
   }
 
   const concurrencyArg = process.argv.find((a) => a.startsWith('--concurrency='));
   const concurrency = concurrencyArg ? parseInt(concurrencyArg.split('=')[1]) : 3;
 
-  const mid = Math.ceil(allSources.length / 2);
-  const sources = groupArg === '1' ? allSources.slice(0, mid) : allSources.slice(mid);
+  let sources;
+  if (groupArg === '0') {
+    sources = allSources;
+    log(`Group 0 (all): Processing all ${sources.length} sources with concurrency=${concurrency}:`);
+  } else {
+    const mid = Math.ceil(allSources.length / 2);
+    sources = groupArg === '1' ? allSources.slice(0, mid) : allSources.slice(mid);
+    log(`Group ${groupArg}: Processing ${sources.length} of ${allSources.length} sources with concurrency=${concurrency}:`);
+  }
 
-  log(`Group ${groupArg}: Processing ${sources.length} sources with concurrency=${concurrency}:`);
   sources.forEach((s, i) => log(`  ${i + 1}. ${s.name} (${s.slug})`));
 
   const tasks = sources.map((source) => async () => {
