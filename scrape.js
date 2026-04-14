@@ -295,7 +295,21 @@ async function scrapeUser(source) {
   console.log(`  Archive saved to ${source.slug}/${source.slug}.json (${allPosts.length} posts)`);
 }
 
+async function checkYtDlp() {
+  try {
+    const { stdout } = await execAsync('yt-dlp --version');
+    console.log(`yt-dlp detected (version ${stdout.trim()}).`);
+    return true;
+  } catch {
+    console.warn(
+      'WARNING: yt-dlp not found on PATH. Video posts will be skipped. Install with `brew install yt-dlp` or see https://github.com/yt-dlp/yt-dlp.',
+    );
+    process.exit(1)
+  }
+}
+
 async function main() {
+  await checkYtDlp();
   const allSources = await getSources();
   const groupArg = process.argv[2];
 
