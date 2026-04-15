@@ -43,6 +43,22 @@ If a `cookies.txt` file is present in the current working directory, it will aut
 
 Export cookies from your browser by running `yt-dlp --cookies-from-browser chrome --cookies cookies.txt` and place the file as `cookies.txt` in the project root.
 
+## Retrying Failed Downloads
+
+Some videos fail with *"This video is only available for registered users"*. After placing a valid `cookies.txt` in the project root, run:
+
+```bash
+bun run retry_errors.js
+# or with a custom data dir / cookies file:
+bun run retry_errors.js --data-dir=/mnt/data --cookies=/path/to/cookies.txt
+```
+
+The script will:
+1. Recursively scan all `*.json` files under the data directory.
+2. Find posts whose `download_errors` contain the registered-users message.
+3. Retry `yt-dlp` with `--cookies` for each such video.
+4. Remove the error entry from the JSON and update `local_path` on success.
+
 ### Example
 
 ```bash
