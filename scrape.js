@@ -390,7 +390,7 @@ async function scrapeUser(source, skipVideo = false) {
       lastId = newPosts[newPosts.length - 1].id;
       await savePosts(userDir, source, allPosts);
       const errorCount = allPosts.reduce((n, p) => n + (p.download_errors ? p.download_errors.length : 0), 0);
-      process.stdout.write(`\r    Total posts collected: ${allPosts.length}, download errors so far: ${errorCount}...`);
+      process.stdout.write(`\r    [${source.slug}] Total posts collected: ${allPosts.length}, download errors so far: ${errorCount}...`);
     }
     log(`\n  Finished archive for ${source.slug}.`);
   }
