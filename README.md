@@ -49,8 +49,8 @@ Some videos fail with *"This video is only available for registered users"*. Aft
 
 ```bash
 bun run retry_errors.js
-# or with a custom data dir / cookies file:
-bun run retry_errors.js --data-dir=/mnt/data --cookies=/path/to/cookies.txt
+# or with a custom data dir / cookies file / concurrency:
+bun run retry_errors.js --data-dir=/mnt/data --cookies=/path/to/cookies.txt --concurrency=5
 ```
 
 The script will:

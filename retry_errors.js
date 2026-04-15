@@ -139,6 +139,23 @@ async function processJsonFile(jsonPath, cookiesPath) {
   }
 }
 
+function withConcurrency(tasks, limit) {
+  const results = [];
+  const executing = new Set();
+  const enqueue = async (task) => {
+    const p = Promise.resolve().then(task).finally(() => executing.delete(p));
+    executing.add(p);
+    results.push(p);
+    if (executing.size >= limit) {
+      await Promise.race(executing);
+    }
+  };
+  return async () => {
+    for (const task of tasks) await enqueue(task);
+    return Promise.all(results);
+  };
+}
+
 async function main() {
   const dataDir = resolveDataDir();
   const cookiesPath = resolveCookiesPath();
@@ -157,13 +174,15 @@ async function main() {
     process.exit(1);
   }
 
+  const concurrencyArg = process.argv.find((a) => a.startsWith('--concurrency='));
+  const concurrency = concurrencyArg ? parseInt(concurrencyArg.split('=')[1]) : 3;
+
   console.log(`Scanning for JSON files in: ${dataDir}`);
   const jsonFiles = findJsonFiles(dataDir);
-  console.log(`Found ${jsonFiles.length} JSON file(s).`);
+  console.log(`Found ${jsonFiles.length} JSON file(s). Concurrency: ${concurrency}`);
 
-  for (const jsonFile of jsonFiles) {
-    await processJsonFile(jsonFile, cookiesPath);
-  }
+  const tasks = jsonFiles.map((jsonFile) => () => processJsonFile(jsonFile, cookiesPath));
+  await withConcurrency(tasks, concurrency)();
 
   console.log('Done.');
 }
