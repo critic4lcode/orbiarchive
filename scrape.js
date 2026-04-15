@@ -254,7 +254,7 @@ function parseHungarianDate(dateStr) {
   return isNaN(date.getTime()) ? dateStr : date.toISOString();
 }
 
-async function scrapeUser(source) {
+async function scrapeUser(source, skipVideo = false) {
   const userDir = path.join(DATA_DIR, source.slug);
   const mediaDir = path.join(userDir, 'media');
 
@@ -309,7 +309,7 @@ async function scrapeUser(source) {
             }),
           );
           m.local_path = `media/${filename}`;
-        } else if (m.type === 'video') {
+        } else if (m.type === 'video' && !skipVideo) {
           const vidFilename = `${post.id}_video`;
           firstPageMediaTasks.push(
             downloadVideo(m.url, mediaDir, vidFilename, source.slug).then((err) => {
@@ -373,7 +373,7 @@ async function scrapeUser(source) {
               }),
             );
             m.local_path = `media/${filename}`;
-          } else if (m.type === 'video') {
+          } else if (m.type === 'video' && !skipVideo) {
             const vidFilename = `${post.id}_video`;
             mediaTasks.push(
               downloadVideo(m.url, mediaDir, vidFilename, source.slug).then((err) => {
@@ -445,6 +445,8 @@ async function main() {
 
   const concurrencyArg = process.argv.find((a) => a.startsWith('--concurrency='));
   const concurrency = concurrencyArg ? parseInt(concurrencyArg.split('=')[1]) : 3;
+  const skipVideo = process.argv.includes('--no-video');
+  if (skipVideo) log('Video download disabled (--no-video flag set).');
 
   let sources;
   if (groupArg === '0') {
@@ -459,7 +461,7 @@ async function main() {
   sources.forEach((s, i) => log(`  ${i + 1}. ${s.name} (${s.slug})`));
 
   const tasks = sources.map((source) => async () => {
-    await scrapeUser(source);
+    await scrapeUser(source, skipVideo);
     await sleep(500);
   });
 
