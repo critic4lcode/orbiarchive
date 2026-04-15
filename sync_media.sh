@@ -61,7 +61,7 @@ for media_dir in "${DATA_DIR}"/*/media; do
       log "  ERROR: failed to move $(basename "$file")"
       ((error_count++)) || true
     fi
-  done < <(find "$media_dir" -maxdepth 1 -type f -print0)
+  done < <(find "$media_dir" -maxdepth 1 -type f ! -name "*.tmp" -print0)
 
   if [[ $error_count -eq 0 ]]; then
     log "  OK: ${page_name}/media — moved ${file_count} files to ${dest_dir}"

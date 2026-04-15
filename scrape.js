@@ -65,13 +65,16 @@ async function fetchPage(url) {
 
 async function downloadFile(url, dest, context) {
   if (fs.existsSync(dest)) return null;
+  const tmp = `${dest}.tmp`;
   try {
     const response = await fetch(url);
     if (!response.ok) throw new Error(`Failed to download ${url}: ${response.statusText}`);
     const buffer = Buffer.from(await response.arrayBuffer());
-    fs.writeFileSync(dest, buffer);
+    fs.writeFileSync(tmp, buffer);
+    fs.renameSync(tmp, dest);
     return null;
   } catch (error) {
+    try { fs.unlinkSync(tmp); } catch {}
     const msg = `Error downloading ${url}: ${error.message}`;
     logError(msg);
     logMissingFile(url, error.message, context);
