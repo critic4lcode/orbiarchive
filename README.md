@@ -37,6 +37,12 @@ bun run scrape.js 2
 | `--links=<file>` | `posztok_links.txt` | File containing `https://posztok.hu/s/<slug>` URLs to filter sources |
 | `--concurrency=<n>` | `3` | Number of sources to scrape in parallel |
 
+### Cookies (optional)
+
+If a `cookies.txt` file is present in the current working directory, it will automatically be passed to `yt-dlp` via `--cookies cookies.txt`. This is useful for downloading age-restricted or login-required videos (e.g. Facebook Reels).
+
+Export cookies from your browser by running `yt-dlp --cookies-from-browser chrome --cookies cookies.txt` and place the file as `cookies.txt` in the project root.
+
 ### Example
 
 ```bash

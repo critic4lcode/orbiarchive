@@ -88,7 +88,9 @@ async function downloadVideo(url, destDir, filename, context) {
   try {
     if (url.includes('facebook.com') || url.includes('youtube.com') || url.includes('reel')) {
       log(`  Downloading video: ${url}`);
-      await execAsync(`yt-dlp -o "${destPath}" "${url}" --quiet --no-warnings --no-playlist`);
+      const cookiesPath = path.join(process.cwd(), 'cookies.txt');
+      const cookiesArg = fs.existsSync(cookiesPath) ? `--cookies "${cookiesPath}"` : '';
+      await execAsync(`yt-dlp -o "${destPath}" "${url}" --quiet --no-warnings --no-playlist ${cookiesArg}`);
     }
     return null;
   } catch (error) {
