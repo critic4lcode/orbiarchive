@@ -3,6 +3,8 @@ const path = require('path');
 const { exec } = require('child_process');
 const util = require('util');
 const execAsync = util.promisify(exec);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const { acquireLock, releaseLock } = require('./lock');
 
 const REGISTERED_USERS_ERROR = 'This video is only available for registered users';
 
@@ -41,6 +43,9 @@ async function retryVideo(url, destPath, cookiesPath) {
 }
 
 async function processJsonFile(jsonPath, cookiesPath) {
+  const lockPath = `${jsonPath}.lock`;
+
+  // First pass: check without lock to skip files with nothing to retry
   let data;
   try {
     data = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
@@ -48,59 +53,89 @@ async function processJsonFile(jsonPath, cookiesPath) {
     console.error(`Skipping ${jsonPath}: could not parse JSON (${e.message})`);
     return;
   }
-
   if (!Array.isArray(data.posts)) return;
+
+  const hasRetryable = data.posts.some(
+    (p) =>
+      Array.isArray(p.download_errors) &&
+      p.download_errors.some((e) => e.error && e.error.includes(REGISTERED_USERS_ERROR)),
+  );
+  if (!hasRetryable) return;
 
   const slug = data.metadata?.slug || path.basename(path.dirname(jsonPath));
   const mediaDir = path.join(path.dirname(jsonPath), 'media');
-  let changed = false;
 
+  // Collect video download tasks outside the lock so we don't hold it during yt-dlp
+  const tasks = [];
   for (const post of data.posts) {
     if (!Array.isArray(post.download_errors) || post.download_errors.length === 0) continue;
-
     const retryErrors = post.download_errors.filter(
       (e) => e.error && e.error.includes(REGISTERED_USERS_ERROR),
     );
-    if (retryErrors.length === 0) continue;
-
     for (const errEntry of retryErrors) {
-      const url = errEntry.url;
-      if (!url) continue;
-
-      const vidFilename = `${post.id}_video.mp4`;
-      const destPath = path.join(mediaDir, vidFilename);
-
-      if (fs.existsSync(destPath)) {
-        console.log(`  [${slug}] Already exists, skipping: ${vidFilename}`);
-        post.download_errors = post.download_errors.filter((e) => e !== errEntry);
-        changed = true;
-        continue;
-      }
-
-      console.log(`  [${slug}] Retrying video for post ${post.id}: ${url}`);
-      try {
-        await retryVideo(url, destPath, cookiesPath);
-        console.log(`  [${slug}] Success: ${vidFilename}`);
-        post.download_errors = post.download_errors.filter((e) => e !== errEntry);
-
-        // Update local_path on the matching media entry if missing
-        for (const m of post.media || []) {
-          if (m.type === 'video' && m.url === url && !m.local_path) {
-            m.local_path = `media/${vidFilename}`;
-          }
-        }
-        changed = true;
-      } catch (e) {
-        console.error(`  [${slug}] Still failed for post ${post.id}: ${e.message}`);
-      }
+      if (!errEntry.url) continue;
+      tasks.push({ post, errEntry, url: errEntry.url });
     }
   }
 
-  if (changed) {
-    const tmpPath = `${jsonPath}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
-    fs.renameSync(tmpPath, jsonPath);
-    console.log(`  [${slug}] Updated ${path.basename(jsonPath)}`);
+  // Download videos without holding the lock
+  const results = new Map(); // url -> { success: bool, destPath }
+  for (const { post, url } of tasks) {
+    const vidFilename = `${post.id}_video.mp4`;
+    const destPath = path.join(mediaDir, vidFilename);
+    if (results.has(url)) continue; // deduplicate same url across posts
+    if (fs.existsSync(destPath)) {
+      results.set(url, { success: true, destPath, vidFilename });
+      continue;
+    }
+    console.log(`  [${slug}] Retrying video for post ${post.id}: ${url}`);
+    try {
+      await retryVideo(url, destPath, cookiesPath);
+      console.log(`  [${slug}] Success: ${vidFilename}`);
+      results.set(url, { success: true, destPath, vidFilename });
+    } catch (e) {
+      console.error(`  [${slug}] Still failed for post ${post.id}: ${e.message}`);
+      results.set(url, { success: false, vidFilename });
+    }
+  }
+
+  // Acquire lock, re-read the latest JSON, apply results, write back
+  await acquireLock(lockPath);
+  try {
+    let freshData;
+    try {
+      freshData = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+    } catch (e) {
+      console.error(`  [${slug}] Could not re-read JSON under lock: ${e.message}`);
+      return;
+    }
+
+    let changed = false;
+    for (const post of freshData.posts) {
+      if (!Array.isArray(post.download_errors) || post.download_errors.length === 0) continue;
+      for (let i = post.download_errors.length - 1; i >= 0; i--) {
+        const errEntry = post.download_errors[i];
+        if (!errEntry.error || !errEntry.error.includes(REGISTERED_USERS_ERROR)) continue;
+        const result = results.get(errEntry.url);
+        if (!result || !result.success) continue;
+        post.download_errors.splice(i, 1);
+        for (const m of post.media || []) {
+          if (m.type === 'video' && m.url === errEntry.url && !m.local_path) {
+            m.local_path = `media/${result.vidFilename}`;
+          }
+        }
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      const tmpPath = `${jsonPath}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(freshData, null, 2));
+      fs.renameSync(tmpPath, jsonPath);
+      console.log(`  [${slug}] Updated ${path.basename(jsonPath)}`);
+    }
+  } finally {
+    releaseLock(lockPath);
   }
 }
 

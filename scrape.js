@@ -51,6 +51,7 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const { acquireLock, releaseLock } = require('./lock');
 
 async function fetchPage(url) {
   try {
@@ -101,16 +102,22 @@ async function downloadVideo(url, destDir, filename, context) {
   }
 }
 
-function savePosts(userDir, source, allPosts) {
+async function savePosts(userDir, source, allPosts) {
   const finalPath = path.join(userDir, `${source.slug}.json`);
+  const lockPath = `${finalPath}.lock`;
   const tmpPath = `${finalPath}.tmp`;
   const result = {
     metadata: source,
     scraped_at: new Date().toISOString(),
     posts: allPosts,
   };
-  fs.writeFileSync(tmpPath, JSON.stringify(result, null, 2));
-  fs.renameSync(tmpPath, finalPath);
+  await acquireLock(lockPath);
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(result, null, 2));
+    fs.renameSync(tmpPath, finalPath);
+  } finally {
+    releaseLock(lockPath);
+  }
 }
 
 async function fetchFullContent(continuationUrl) {
@@ -314,7 +321,7 @@ async function scrapeUser(source) {
       }
     }
     await Promise.all(firstPageMediaTasks);
-    savePosts(userDir, source, allPosts);
+    await savePosts(userDir, source, allPosts);
   }
 
   const sourceIdMatch = html.match(/initInfiniteScrollForSource\((\d+)\)/);
@@ -381,14 +388,14 @@ async function scrapeUser(source) {
 
       allPosts = allPosts.concat(newPosts);
       lastId = newPosts[newPosts.length - 1].id;
-      savePosts(userDir, source, allPosts);
+      await savePosts(userDir, source, allPosts);
       const errorCount = allPosts.reduce((n, p) => n + (p.download_errors ? p.download_errors.length : 0), 0);
       process.stdout.write(`\r    Total posts collected: ${allPosts.length}, download errors so far: ${errorCount}...`);
     }
     log(`\n  Finished archive for ${source.slug}.`);
   }
 
-  savePosts(userDir, source, allPosts);
+  await savePosts(userDir, source, allPosts);
   const totalErrors = allPosts.reduce((n, p) => n + (p.download_errors ? p.download_errors.length : 0), 0);
   log(`  Archive saved to ${source.slug}/${source.slug}.json (${allPosts.length} posts, ${totalErrors} download errors)`);
 }
