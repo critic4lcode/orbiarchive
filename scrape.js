@@ -300,22 +300,28 @@ async function scrapeUser(source, skipVideo = false) {
       post.download_errors = post.download_errors || [];
       for (const m of post.media) {
         if (m.type === 'image') {
-          const ext = path.extname(m.url.split('?')[0]) || '.jpg';
-          const filename = `${post.id}_${Math.random().toString(36).substring(7)}${ext}`;
+          const urlBase = path.basename(m.url.split('?')[0]);
+          const filename = `${post.id}_${urlBase}`;
           const dest = path.join(mediaDir, filename);
-          firstPageMediaTasks.push(
-            downloadFile(m.url, dest, source.slug).then((err) => {
-              if (err) post.download_errors.push(err);
-            }),
-          );
+          const alreadyFailed = post.download_errors.some((e) => e.url === m.url);
+          if (!alreadyFailed) {
+            firstPageMediaTasks.push(
+              downloadFile(m.url, dest, source.slug).then((err) => {
+                if (err) post.download_errors.push(err);
+              }),
+            );
+          }
           m.local_path = `media/${filename}`;
         } else if (m.type === 'video' && !skipVideo) {
           const vidFilename = `${post.id}_video`;
-          firstPageMediaTasks.push(
-            downloadVideo(m.url, mediaDir, vidFilename, source.slug).then((err) => {
-              if (err) post.download_errors.push(err);
-            }),
-          );
+          const alreadyFailed = post.download_errors.some((e) => e.url === m.url);
+          if (!alreadyFailed) {
+            firstPageMediaTasks.push(
+              downloadVideo(m.url, mediaDir, vidFilename, source.slug).then((err) => {
+                if (err) post.download_errors.push(err);
+              }),
+            );
+          }
           m.local_path = `media/${vidFilename}.mp4`;
         }
       }
@@ -364,22 +370,28 @@ async function scrapeUser(source, skipVideo = false) {
         post.download_errors = post.download_errors || [];
         for (const m of post.media) {
           if (m.type === 'image') {
-            const ext = path.extname(m.url.split('?')[0]) || '.jpg';
-            const filename = `${post.id}_${Math.random().toString(36).substring(7)}${ext}`;
+            const urlBase = path.basename(m.url.split('?')[0]);
+            const filename = `${post.id}_${urlBase}`;
             const dest = path.join(mediaDir, filename);
-            mediaTasks.push(
-              downloadFile(m.url, dest, source.slug).then((err) => {
-                if (err) post.download_errors.push(err);
-              }),
-            );
+            const alreadyFailed = post.download_errors.some((e) => e.url === m.url);
+            if (!alreadyFailed) {
+              mediaTasks.push(
+                downloadFile(m.url, dest, source.slug).then((err) => {
+                  if (err) post.download_errors.push(err);
+                }),
+              );
+            }
             m.local_path = `media/${filename}`;
           } else if (m.type === 'video' && !skipVideo) {
             const vidFilename = `${post.id}_video`;
-            mediaTasks.push(
-              downloadVideo(m.url, mediaDir, vidFilename, source.slug).then((err) => {
-                if (err) post.download_errors.push(err);
-              }),
-            );
+            const alreadyFailed = post.download_errors.some((e) => e.url === m.url);
+            if (!alreadyFailed) {
+              mediaTasks.push(
+                downloadVideo(m.url, mediaDir, vidFilename, source.slug).then((err) => {
+                  if (err) post.download_errors.push(err);
+                }),
+              );
+            }
             m.local_path = `media/${vidFilename}.mp4`;
           }
         }
