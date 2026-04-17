@@ -211,8 +211,8 @@ def download_with_cookie_rotation(
     Returns:
         (success: bool, last_output: str)
     """
-    # Always attempt at least once, even without cookies
-    candidates = cookie_files if cookie_files else [None]
+    # Always try without cookie first, then each cookie file
+    candidates = [None] + cookie_files
 
     for cookie in candidates:
         cookie_label = os.path.basename(cookie) if cookie else "<no-cookie>"
