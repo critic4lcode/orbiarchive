@@ -30,12 +30,14 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-FAILED_CSV  = "failed_downloads.csv"
-OUTPUT_DIR  = "downloads"
-WG_DIR      = "wg"
+FAILED_CSV      = "failed_downloads.csv"
+DOWNLOADED_LOG  = "downloaded.csv"
+OUTPUT_DIR      = "downloads"
+WG_DIR          = "wg"
 
-_wg_pool: Optional["WireGuardPool"] = None   # set in main() when --wg-dir is given
-_shutdown = False                             # set to True on SIGINT to stop after current download
+_wg_pool:    Optional["WireGuardPool"] = None  # set in main() when --wg-dir is given
+_shutdown:   bool = False                      # set to True on SIGINT to stop after current download
+_downloaded: set[str] = set()                  # filenames logged in downloaded.log
 
 
 def _handle_sigint(sig, frame) -> None:
@@ -83,6 +85,39 @@ def record_failure(page_name: str, url: str, reason: str) -> None:
             writer.writerow(["timestamp", "page_name", "url", "reason"])
         writer.writerow([datetime.now().isoformat(), page_name, url, reason])
     log.warning("Recorded failure → %s", FAILED_CSV)
+
+
+def record_downloaded(filename: str) -> None:
+    file_exists = os.path.isfile(DOWNLOADED_LOG)
+    size = os.path.getsize(os.path.join(OUTPUT_DIR, filename))
+    with open(DOWNLOADED_LOG, "a", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        if not file_exists:
+            writer.writerow(["timestamp", "filename", "filesize"])
+        writer.writerow([datetime.now().isoformat(), filename, size])
+
+
+def load_downloaded() -> set[str]:
+    if not os.path.isfile(DOWNLOADED_LOG):
+        _backfill_downloaded_log()
+    with open(DOWNLOADED_LOG, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        return {row["filename"].strip() for row in reader if row.get("filename")}
+
+
+def _backfill_downloaded_log() -> None:
+    """Populate downloaded.log from any .mp4 files already in OUTPUT_DIR."""
+    existing = sorted(Path(OUTPUT_DIR).glob("*.mp4")) if os.path.isdir(OUTPUT_DIR) else []
+    if not existing:
+        return
+    log.info("Back-filling %s with %d existing file(s) in %s …", DOWNLOADED_LOG, len(existing), OUTPUT_DIR)
+    with open(DOWNLOADED_LOG, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(["timestamp", "filename", "filesize"])
+        for f in existing:
+            mtime = datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+            writer.writerow([mtime, f.name, f.stat().st_size])
+    log.info("Back-fill complete.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -421,11 +456,12 @@ def _download_one(idx: int, total: int, page_name: str, url: str) -> bool:
         record_failure(page_name, url, "Could not extract post ID")
         return False
 
+    filename  = f"{page_name}_{post_id}.mp4"
     dest_path = build_output_path(page_name, post_id)
     log.info("  Output path: %s", dest_path)
 
-    if os.path.isfile(dest_path) and os.path.getsize(dest_path) > 0:
-        log.info("  Already exists; skipping.")
+    if filename in _downloaded:
+        log.info("  Already downloaded; skipping.")
         return True
 
     slots = _wg_pool.rotation_order() if (_wg_pool and _wg_pool.enabled) else [None]
@@ -441,6 +477,8 @@ def _download_one(idx: int, total: int, page_name: str, url: str) -> bool:
             ok, output = wg_ns.run_ytdlp(url, dest_path)
         if ok:
             log.info("  ✓ Succeeded via %s", label)
+            record_downloaded(filename)
+            _downloaded.add(filename)
             return True
         log.warning("  %s failed: %s", label, output.strip()[:200])
         if _shutdown or "Interrupted by user" in output:
@@ -479,6 +517,10 @@ def process_csv(csv_path: str, retry_failed: bool = False) -> None:
             sys.exit(1)
 
         rows = list(reader)
+
+    global _downloaded
+    _downloaded = load_downloaded()
+    log.info("Loaded %d previously downloaded filename(s) from %s.", len(_downloaded), DOWNLOADED_LOG)
 
     failed_urls = set() if retry_failed else load_failed_urls()
     if failed_urls:
