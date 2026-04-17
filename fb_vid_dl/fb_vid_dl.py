@@ -261,7 +261,35 @@ def download_with_backoff(
 # CSV processing
 # ══════════════════════════════════════════════════════════════════════════════
 
-def process_csv(csv_path: str, cookie_files: list[str]) -> None:
+def _download_one(idx: int, total: int, page_name: str, url: str, cookie_files: list[str]) -> bool:
+    """Download a single video. Returns True on success (including skip)."""
+    if not url:
+        log.warning("[%d/%d] Empty URL for page '%s'; skipping.", idx, total, page_name)
+        return True
+
+    log.info("─" * 60)
+    log.info("[%d/%d] %s  →  %s", idx, total, page_name, url)
+
+    post_id = extract_post_id(url)
+    if not post_id:
+        log.error("  Could not extract post ID from URL; skipping.")
+        record_failure(page_name, url, "Could not extract post ID")
+        return False
+
+    dest_path = build_output_path(page_name, post_id)
+    log.info("  Output path: %s", dest_path)
+
+    if os.path.isfile(dest_path) and os.path.getsize(dest_path) > 0:
+        log.info("  Already exists; skipping.")
+        return True
+
+    ok = download_with_backoff(url, dest_path, list(cookie_files))
+    if not ok:
+        record_failure(page_name, url, "All retries exhausted")
+    return ok
+
+
+def process_csv(csv_path: str, cookie_files: list[str], workers: int = 1) -> None:
     """Read the input CSV and download every video entry."""
     if not os.path.isfile(csv_path):
         log.critical("Input CSV not found: %s", csv_path)
@@ -270,7 +298,6 @@ def process_csv(csv_path: str, cookie_files: list[str]) -> None:
     with open(csv_path, newline="", encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
 
-        # Validate headers
         required = {"page_name", "url"}
         if not required.issubset(set(reader.fieldnames or [])):
             log.critical(
@@ -283,49 +310,30 @@ def process_csv(csv_path: str, cookie_files: list[str]) -> None:
         rows = list(reader)
 
     total = len(rows)
-    log.info("Starting download of %d video(s).", total)
+    log.info("Starting download of %d video(s) with %d worker(s).", total, workers)
 
     succeeded = 0
     failed    = 0
 
-    for idx, row in enumerate(rows, start=1):
-        page_name = row["page_name"].strip()
-        url       = row["url"].strip()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(
+                _download_one,
+                idx,
+                total,
+                row["page_name"].strip(),
+                row["url"].strip(),
+                cookie_files,
+            ): idx
+            for idx, row in enumerate(rows, start=1)
+        }
 
-        if not url:
-            log.warning("[%d/%d] Empty URL for page '%s'; skipping.", idx, total, page_name)
-            continue
+        for future in as_completed(futures):
+            if future.result():
+                succeeded += 1
+            else:
+                failed += 1
 
-        log.info("─" * 60)
-        log.info("[%d/%d] %s  →  %s", idx, total, page_name, url)
-
-        # ── Resolve post ID ───────────────────────────────────────────────────
-        post_id = extract_post_id(url)
-        if not post_id:
-            log.error("  Could not extract post ID from URL; skipping.")
-            record_failure(page_name, url, "Could not extract post ID")
-            failed += 1
-            continue
-
-        dest_path = build_output_path(page_name, post_id)
-        log.info("  Output path: %s", dest_path)
-
-        # ── Skip if already downloaded ────────────────────────────────────────
-        if os.path.isfile(dest_path) and os.path.getsize(dest_path) > 0:
-            log.info("  Already exists; skipping.")
-            succeeded += 1
-            continue
-
-        # ── Download ──────────────────────────────────────────────────────────
-        ok = download_with_backoff(url, dest_path, list(cookie_files))  # copy so rotation order is fresh
-
-        if ok:
-            succeeded += 1
-        else:
-            record_failure(page_name, url, "All retries exhausted")
-            failed += 1
-
-    # ── Summary ───────────────────────────────────────────────────────────────
     log.info("═" * 60)
     log.info("Done.  Succeeded: %d  |  Failed: %d  |  Total: %d", succeeded, failed, total)
     if failed:
@@ -357,6 +365,12 @@ def parse_args() -> argparse.Namespace:
         help=f"Destination folder for downloaded videos (default: {OUTPUT_DIR})",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=3,
+        help="Number of parallel download workers (default: 3)",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable verbose debug logging",
@@ -375,7 +389,7 @@ def main() -> None:
     OUTPUT_DIR = args.output_dir
 
     cookie_files = load_cookie_files(args.cookies_dir)
-    process_csv(args.csv, cookie_files)
+    process_csv(args.csv, cookie_files, workers=args.workers)
 
 
 if __name__ == "__main__":
