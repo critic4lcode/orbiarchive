@@ -289,7 +289,16 @@ def _download_one(idx: int, total: int, page_name: str, url: str, cookie_files: 
     return ok
 
 
-def process_csv(csv_path: str, cookie_files: list[str], workers: int = 1) -> None:
+def load_failed_urls() -> set[str]:
+    """Return the set of URLs that have previously failed all retries."""
+    if not os.path.isfile(FAILED_CSV):
+        return set()
+    with open(FAILED_CSV, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        return {row["url"].strip() for row in reader if row.get("url")}
+
+
+def process_csv(csv_path: str, cookie_files: list[str], workers: int = 1, retry_failed: bool = False) -> None:
     """Read the input CSV and download every video entry."""
     if not os.path.isfile(csv_path):
         log.critical("Input CSV not found: %s", csv_path)
@@ -309,6 +318,11 @@ def process_csv(csv_path: str, cookie_files: list[str], workers: int = 1) -> Non
 
         rows = list(reader)
 
+    failed_urls = set() if retry_failed else load_failed_urls()
+    if failed_urls:
+        log.info("Skipping %d previously-failed URL(s). Use --retry-failed to retry them.", len(failed_urls))
+
+    rows = [r for r in rows if r.get("url", "").strip() not in failed_urls]
     total = len(rows)
     log.info("Starting download of %d video(s) with %d worker(s).", total, workers)
 
@@ -365,6 +379,11 @@ def parse_args() -> argparse.Namespace:
         help=f"Destination folder for downloaded videos (default: {OUTPUT_DIR})",
     )
     parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Retry URLs that previously exhausted all retries (default: skip them)",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=3,
@@ -389,7 +408,7 @@ def main() -> None:
     OUTPUT_DIR = args.output_dir
 
     cookie_files = load_cookie_files(args.cookies_dir)
-    process_csv(args.csv, cookie_files, workers=args.workers)
+    process_csv(args.csv, cookie_files, workers=args.workers, retry_failed=args.retry_failed)
 
 
 if __name__ == "__main__":
