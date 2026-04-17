@@ -71,17 +71,22 @@ def merge_posts(posts_old: list, posts_new: list) -> tuple[list, dict]:
             continue
         if pid in seen:
             updated += 1        # newer file's copy replaces older
+            old_errors = seen[pid].get("download_errors") or []
+            new_errors = post.get("download_errors") or []
+            seen[pid] = post    # newer wins for all fields
+            seen[pid]["download_errors"] = old_errors + new_errors
         else:
-            added_new += 1      # net-new post found only in newer file
-        seen[pid] = post        # newer always wins
+            added_new += 1      # present only in new dir — skipped
 
-    only_in_old = len(old_ids - set(p.get("id") for p in posts_new if p.get("id")))
+    new_ids = set(p.get("id") for p in posts_new if p.get("id"))
+    old_only_ids = old_ids - new_ids
+    old_only_posts = [p for p in posts_old if p.get("id") in old_only_ids]
 
     stats = {
         "total_old":   len(posts_old),
         "total_new":   len(posts_new),
         "duplicates_updated": updated,
-        "only_in_old": only_in_old,
+        "only_in_old": len(old_only_ids),
         "only_in_new": added_new,
         "merged_total": len(seen),
     }
@@ -92,7 +97,7 @@ def merge_posts(posts_old: list, posts_new: list) -> tuple[list, dict]:
         key=lambda p: p.get("date_iso", ""),
         reverse=True,
     )
-    return merged, stats
+    return merged, stats, old_only_posts
 
 
 def consolidate_file(slug: str, path_old: str | None, path_new: str | None) -> dict:
@@ -118,7 +123,7 @@ def consolidate_file(slug: str, path_old: str | None, path_new: str | None) -> d
     if data_old and data_new:
         posts_old = data_old.get("posts", [])
         posts_new = data_new.get("posts", [])
-        merged_posts, stats = merge_posts(posts_old, posts_new)
+        merged_posts, stats, old_only_posts = merge_posts(posts_old, posts_new)
 
         # Use the newer file's metadata & scraped_at
         output = {
@@ -134,18 +139,12 @@ def consolidate_file(slug: str, path_old: str | None, path_new: str | None) -> d
         status = "merged"
 
     elif data_new:
-        output = {**data_new, "consolidated_at": datetime.utcnow().isoformat() + "Z"}
-        stats  = {"total_new": len(data_new.get("posts", [])),
-                  "merged_total": len(data_new.get("posts", [])),
-                  "note": "only in NEW dir"}
-        status = "new_only"
+        print(f"       skipped — only in NEW dir")
+        return {"slug": slug, "status": "new_only", "stats": {}, "old_only_posts": []}
 
     elif data_old:
-        output = {**data_old, "consolidated_at": datetime.utcnow().isoformat() + "Z"}
-        stats  = {"total_old": len(data_old.get("posts", [])),
-                  "merged_total": len(data_old.get("posts", [])),
-                  "note": "only in OLD dir"}
-        status = "old_only"
+        print(f"       skipped — only in OLD dir")
+        return {"slug": slug, "status": "old_only", "stats": {}, "old_only_posts": []}
 
     else:
         print(f"  ✖  [{slug}] Both files failed to load — skipping.")
@@ -155,7 +154,10 @@ def consolidate_file(slug: str, path_old: str | None, path_new: str | None) -> d
     out_path = os.path.join(DIR_OUTPUT, f"{slug}.json")
     save_json(out_path, output)
 
-    return {"slug": slug, "status": status, "stats": stats, "out_path": out_path}
+    return {
+        "slug": slug, "status": status, "stats": stats, "out_path": out_path,
+        "old_only_posts": old_only_posts if status == "merged" else [],
+    }
 
 
 def main():
@@ -228,6 +230,53 @@ def main():
     print(f"  Errors              : {errors}")
     print(f"  Total posts saved   : {total_posts:,}")
     print(f"  Output directory    : {DIR_OUTPUT}")
+    # ── CSV report: only_in_old posts (20 sample per slug: 10 oldest + 10 newest) ──
+    csv_path = os.path.join(DIR_OUTPUT, "consolidation_report.csv")
+    fieldnames = [
+        "file_slug",
+        "id", "source_slug", "source_name",
+        "date_iso", "date", "original_url",
+        "content_preview", "media_count", "links_count",
+    ]
+
+    def make_row(slug, post):
+        content = post.get("content") or ""
+        return {
+            "file_slug":       slug,
+            "id":              post.get("id", ""),
+            "source_slug":     post.get("source_slug", ""),
+            "source_name":     post.get("source_name", ""),
+            "date_iso":        post.get("date_iso", ""),
+            "date":            post.get("date", ""),
+            "original_url":    post.get("original_url", ""),
+            "content_preview": content[:200].replace("\n", " "),
+            "media_count":     len(post.get("media", []) or []),
+            "links_count":     len(post.get("links", []) or []),
+        }
+
+    csv_rows = []
+    for r in results:
+        if r["status"] != "merged":
+            continue
+        posts = [p for p in r.get("old_only_posts", []) if p.get("date_iso")]
+        posts_sorted = sorted(posts, key=lambda p: p["date_iso"])
+        oldest = posts_sorted[:10]
+        newest = posts_sorted[-10:]
+        seen_ids: set = set()
+        for p in oldest + newest:
+            pid = p.get("id")
+            if pid in seen_ids:
+                continue
+            seen_ids.add(pid)
+            csv_rows.append(make_row(r["slug"], p))
+
+    os.makedirs(DIR_OUTPUT, exist_ok=True)
+    with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(csv_rows)
+    print(f"  CSV report saved    : {csv_path} ({len(csv_rows)} rows)")
+
     print("=" * 60)
     print("  ✅ Done!")
 
