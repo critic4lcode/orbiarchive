@@ -4,36 +4,49 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE="$SCRIPT_DIR/downloads"
 DEST="/mnt/storagebox/downloads"
-SYNC_LOG="$SCRIPT_DIR/synced.log"
+SYNC_LOG="$SCRIPT_DIR/copied_to_storage.csv"
+
+log()  { echo "[$(date -Iseconds)] $*"; }
+warn() { echo "[$(date -Iseconds)] WARN: $*" >&2; }
 
 mkdir -p "$DEST"
 
 [[ -f "$SYNC_LOG" ]] || echo "timestamp,filename,filesize" > "$SYNC_LOG"
 
 shopt -s nullglob
-for f in "$SOURCE"/*.mp4; do
-    # skip files modified within the last 300 seconds (may still be written)
-    [[ $(( $(date +%s) - $(stat -c%Y "$f") )) -lt 300 ]] && continue
+files=("$SOURCE"/*.mp4)
+log "Found ${#files[@]} file(s) in $SOURCE"
 
+for f in "${files[@]}"; do
     filename="$(basename "$f")"
     filesize="$(stat -c%s "$f")"
+    age=$(( $(date +%s) - $(stat -c%Y "$f") ))
     dest="$DEST/$filename"
 
-    # skip if already at destination
+    if [[ $age -lt 300 ]]; then
+        log "SKIP   $filename — too recent (${age}s old)"
+        continue
+    fi
+
     if [[ -f "$dest" ]]; then
+        log "CLEAN  $filename — already at destination, removing local copy"
         rm -f "$f"
         continue
     fi
 
+    log "COPY   $filename (${filesize} bytes) → $DEST"
     if cp "$f" "$dest"; then
         dest_size="$(stat -c%s "$dest" 2>/dev/null || echo 0)"
         if [[ "$dest_size" -eq "$filesize" ]]; then
             printf '%s,%s,%s\n' "$(date -Iseconds)" "$filename" "$filesize" >> "$SYNC_LOG"
             rm -f "$f"
+            log "OK     $filename — copied and verified"
         else
-            echo "[$(date -Iseconds)] WARN: size mismatch for $filename (src=$filesize dst=$dest_size) — keeping source" >&2
+            warn "$filename — size mismatch (src=$filesize dst=$dest_size), keeping source for retry"
         fi
     else
-        echo "[$(date -Iseconds)] WARN: failed to copy $filename" >&2
+        warn "$filename — cp failed, keeping source for retry"
     fi
 done
+
+log "Done."
