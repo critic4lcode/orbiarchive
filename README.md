@@ -1,131 +1,101 @@
-# posztok-scraper
+# orbiarchive
 
-A scraper for [posztok.hu](https://posztok.hu) that archives posts and media from Facebook page aggregations.
+A collection of tools for archiving Hungarian public content — Facebook pages, government documents, and post aggregators.
 
-## Requirements
+## Tools
 
-- [Bun](https://bun.sh) (or Node.js)
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — for video downloads (`brew install yt-dlp`)
-- `rsync` — for media sync to storage
+### [`scrape.js`](scrape.js) — posztok.hu scraper
 
-## Installation
+Scrapes posts and media from [posztok.hu](https://posztok.hu) Facebook page aggregations.
 
 ```bash
 bun install
+bun run scrape.js 0                          # all sources
+bun run scrape.js 1                          # first half (parallelisable with group 2)
+bun run scrape.js 2                          # second half
+bun run scrape.js 0 --data-dir=/mnt/data --concurrency=5
 ```
 
-## Usage
-
-### Scraping
-
-```bash
-# Process all sources
-bun run scrape.js 0
-
-# Process first half of sources
-bun run scrape.js 1
-
-# Process second half of sources (run in parallel with group 1)
-bun run scrape.js 2
-```
-
-### Options
+See full documentation in the root README below, or the options table:
 
 | Argument | Default | Description |
-|---|---|---|
-| `--data-dir=<path>` | `./data` | Where to store scraped data and media |
-| `--links=<file>` | `posztok_links.txt` | File containing `https://posztok.hu/s/<slug>` URLs to filter sources |
-| `--concurrency=<n>` | `3` | Number of sources to scrape in parallel |
+|----------|---------|-------------|
+| `--data-dir` | `./data` | Scraped data and media output |
+| `--links` | `posztok_links.txt` | File of `https://posztok.hu/s/<slug>` URLs to filter |
+| `--concurrency` | `3` | Parallel source scrapers |
 
-### Cookies (optional)
+### [`retry_errors.js`](retry_errors.js) — Retry failed video downloads
 
-If a `cookies.txt` file is present in the current working directory, it will automatically be passed to `yt-dlp` via `--cookies cookies.txt`. This is useful for downloading age-restricted or login-required videos (e.g. Facebook Reels).
-
-Export cookies from your browser by running `yt-dlp --cookies-from-browser chrome --cookies cookies.txt` and place the file as `cookies.txt` in the project root.
-
-## Retrying Failed Downloads
-
-Some videos fail with *"This video is only available for registered users"*. After placing a valid `cookies.txt` in the project root, run:
+Re-attempts videos that failed with "registered users only" by passing a cookie file to `yt-dlp`.
 
 ```bash
 bun run retry_errors.js
-# or with a custom data dir / cookies file / concurrency:
 bun run retry_errors.js --data-dir=/mnt/data --cookies=/path/to/cookies.txt --concurrency=5
 ```
 
-The script will:
-1. Recursively scan all `*.json` files under the data directory.
-2. Find posts whose `download_errors` contain the registered-users message.
-3. Retry `yt-dlp` with `--cookies` for each such video.
-4. Remove the error entry from the JSON and update `local_path` on success.
+### [`verify_media.py`](verify_media.py) — Verify media files
 
-### Example
+Checks that every `local_path` entry in the scraped JSON files exists on disk. Outputs a CSV of missing files.
 
 ```bash
-bun run scrape.js 1 --data-dir=/mnt/data --links=my_links.txt --concurrency=5
+python verify_media.py [--data-dir=./data] [--media-dir=/mnt/media]
 ```
 
-### Links file format
+### [`sync_media.sh`](sync_media.sh) — Sync media to storage
 
-One URL per line:
-
-```
-https://posztok.hu/s/somepage
-https://posztok.hu/s/anotherpage
-```
-
-## Output
-
-Each source is saved to `<data-dir>/<slug>/<slug>.json` with the following structure:
-
-```json
-{
-  "metadata": { "slug": "...", "name": "...", "orig_url": "...", "handler": "facebook" },
-  "scraped_at": "2024-01-01T00:00:00.000Z",
-  "posts": [
-    {
-      "id": "123",
-      "date": "Ma 10:30",
-      "date_iso": "2024-01-01T10:30:00.000Z",
-      "content": "Post text...",
-      "media": [
-        { "type": "image", "url": "https://...", "local_path": "media/123_abc.jpg" }
-      ],
-      "links": [],
-      "download_errors": []
-    }
-  ]
-}
-```
-
-Media files are saved to `<data-dir>/<slug>/media/`.
-
-## Logs
-
-| File | Description |
-|---|---|
-| `scrape.log` | Timestamped scrape activity log |
-| `missing_files.log` | All failed media downloads (append-only, safe for parallel processes) |
-| `sync_media.log` | Media sync activity log |
-
-## Media Sync
-
-Moves media files from local storage to `/mnt/storagebox/data/<slug>/media/` hourly.
-
-### Install cron job
+Moves media files from local storage to `/mnt/storagebox/data/<slug>/media/` using `mv`. Install as an hourly cron job with:
 
 ```bash
-bash install_cron.sh
-# or with a custom data dir:
-bash install_cron.sh --data-dir=/mnt/data
+bash install_cron.sh [--data-dir=/mnt/data]
 ```
 
-### Run manually
+---
+
+## Subdirectories
+
+### [`fb_scrape/`](fb_scrape/README.md) — Facebook page scraper
+
+Async Playwright scraper that archives posts and media directly from Facebook pages into a local SQLite database. Includes a login helper (`fblogin.py`) to save browser sessions.
+
+### [`fb_vid_dl/`](fb_vid_dl/README.md) — Facebook video downloader
+
+Downloads Facebook videos from a CSV list using `yt-dlp`. Features cookie rotation, rate-limit backoff, parallel workers, and resume support. `yt-dlp` is auto-installed if not found.
 
 ```bash
-bash sync_media.sh
-# or:
-bash sync_media.sh --data-dir=/mnt/data
+cd fb_vid_dl
+python fb_vid_dl.py videos.csv --workers 3
+python fb_vid_dl.py videos.csv --retry-failed   # re-attempt previously failed URLs
 ```
 
-Files are moved (not copied) using `mv` directly to the remote mount, freeing up local disk space immediately. If a file already exists at the destination it is removed from local storage without overwriting.
+### [`kormanyhu/`](kormanyhu/README.md) — Hungarian government document scraper
+
+Fetches the full document-group index from `kormany.hu` and downloads the associated ZIP archives.
+
+```bash
+cd kormanyhu
+python dokutar.py           # build index → all_document_groups.json
+python download_docs.py     # download ZIPs → downloads/
+```
+
+### [`posztok/`](posztok/README.md) — Post-processing tools
+
+Flattens scraped posztok.hu JSON archives into a relational SQLite/DuckDB database and reconciles file manifests.
+
+```bash
+cd posztok
+python json2db.py --data-dir=../data --db=posts.db
+python import_file_list.py filelist.txt
+```
+
+---
+
+## Requirements summary
+
+| Tool | Runtime |
+|------|---------|
+| `scrape.js`, `retry_errors.js` | [Bun](https://bun.sh) or Node.js |
+| `fb_scrape/` | Python 3.10+, Playwright, aiohttp |
+| `fb_vid_dl/` | Python 3.10+, curl (yt-dlp auto-installed) |
+| `kormanyhu/` | Python 3.10+, requests |
+| `posztok/` | Python 3.10+, optional: duckdb, tqdm |
+| `verify_media.py`, `sync_media.sh` | Python 3.10+ / bash |
