@@ -288,7 +288,7 @@ def flatten_file(filepath: str, db: DBBackend, backend: str,
             _safe(meta.get("orig_url")),
             _safe(meta.get("handler")),
             _safe(scraped_at),
-            os.path.abspath(filepath),
+            Path(filepath).name,
         ))
     except Exception as exc:
         stats["error"] = f"source insert failed: {exc}"
