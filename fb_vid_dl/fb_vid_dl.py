@@ -31,7 +31,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-RATE_LIMIT_SIGNAL   = "Cannot parse data string"   # text that signals rate-limiting
+RATE_LIMIT_SIGNAL   = "Cannot parse data"   # text that signals rate-limiting
 BACKOFF_MINUTES     = [5, 25, 60, 150]             # exponential-ish backoff ladder
 COOKIES_DIR         = "cookies"                    # folder that holds *.txt cookie files
 FAILED_CSV          = "failed_downloads.csv"       # output for downloads that never succeeded
