@@ -118,6 +118,38 @@ def record_failure(page_name: str, url: str, reason: str) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# yt-dlp bootstrap
+# ══════════════════════════════════════════════════════════════════════════════
+
+def ensure_ytdlp() -> None:
+    """Install yt-dlp to ~/.local/bin if it is not already on PATH."""
+    import shutil
+    if shutil.which("yt-dlp"):
+        return
+
+    install_dir = os.path.expanduser("~/.local/bin")
+    install_path = os.path.join(install_dir, "yt-dlp")
+    log.info("yt-dlp not found — installing to %s …", install_path)
+
+    os.makedirs(install_dir, exist_ok=True)
+
+    result = subprocess.run(
+        ["curl", "-L", "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
+         "-o", install_path],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        log.critical("Failed to download yt-dlp:\n%s", result.stderr)
+        sys.exit(1)
+
+    os.chmod(install_path, 0o755)
+
+    # Make it available in the current process's PATH
+    os.environ["PATH"] = install_dir + os.pathsep + os.environ.get("PATH", "")
+    log.info("yt-dlp installed successfully.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Core download logic
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -402,6 +434,8 @@ def main() -> None:
 
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
+
+    ensure_ytdlp()
 
     # Allow CLI overrides of module-level constants
     global OUTPUT_DIR
