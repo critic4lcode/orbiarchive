@@ -98,26 +98,30 @@ def record_downloaded(filename: str) -> None:
 
 
 def load_downloaded() -> set[str]:
-    if not os.path.isfile(DOWNLOADED_LOG):
-        _backfill_downloaded_log()
-    with open(DOWNLOADED_LOG, newline="", encoding="utf-8") as fh:
-        reader = csv.DictReader(fh)
-        return {row["filename"].strip() for row in reader if row.get("filename")}
+    known: set[str] = set()
+
+    # Source 1: downloaded.csv
+    if os.path.isfile(DOWNLOADED_LOG):
+        with open(DOWNLOADED_LOG, newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            if "filename" in (reader.fieldnames or []):
+                known |= {row["filename"].strip() for row in reader if row.get("filename")}
+        log.info("Loaded %d filename(s) from %s.", len(known), os.path.abspath(DOWNLOADED_LOG))
+
+    # Source 2: actual .mp4 files on disk
+    disk: set[str] = set()
+    if os.path.isdir(OUTPUT_DIR):
+        disk = {f.name for f in Path(OUTPUT_DIR).glob("*.mp4")}
+    new_on_disk = disk - known
+    if new_on_disk:
+        log.info("Found %d extra file(s) on disk not in CSV; adding to skip list.", len(new_on_disk))
+        known |= new_on_disk
+
+    return known
 
 
 def _backfill_downloaded_log() -> None:
-    """Populate downloaded.log from any .mp4 files already in OUTPUT_DIR."""
-    existing = sorted(Path(OUTPUT_DIR).glob("*.mp4")) if os.path.isdir(OUTPUT_DIR) else []
-    if not existing:
-        return
-    log.info("Back-filling %s with %d existing file(s) in %s …", DOWNLOADED_LOG, len(existing), OUTPUT_DIR)
-    with open(DOWNLOADED_LOG, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(["timestamp", "filename", "filesize"])
-        for f in existing:
-            mtime = datetime.fromtimestamp(f.stat().st_mtime).isoformat()
-            writer.writerow([mtime, f.name, f.stat().st_size])
-    log.info("Back-fill complete.")
+    pass  # replaced by merged load_downloaded above
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -460,8 +464,9 @@ def _download_one(idx: int, total: int, page_name: str, url: str) -> bool:
     dest_path = build_output_path(page_name, post_id)
     log.info("  Output path: %s", dest_path)
 
-    if filename in _downloaded:
+    if filename in _downloaded or os.path.isfile(dest_path):
         log.info("  Already downloaded; skipping.")
+        _downloaded.add(filename)
         return True
 
     slots = _wg_pool.rotation_order() if (_wg_pool and _wg_pool.enabled) else [None]
