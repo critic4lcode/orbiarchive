@@ -106,6 +106,12 @@ def load_downloaded() -> set[str]:
             reader = csv.DictReader(fh)
             if "filename" in (reader.fieldnames or []):
                 known |= {row["filename"].strip() for row in reader if row.get("filename")}
+            else:
+                log.warning("downloaded.csv has no 'filename' header; reading positionally.")
+                fh.seek(0)
+                for row in csv.reader(fh):
+                    if len(row) >= 2 and row[1].endswith(".mp4"):
+                        known.add(row[1].strip())
         log.info("Loaded %d filename(s) from %s.", len(known), os.path.abspath(DOWNLOADED_LOG))
 
     # Source 2: actual .mp4 files on disk
@@ -525,7 +531,7 @@ def process_csv(csv_path: str, retry_failed: bool = False) -> None:
 
     global _downloaded
     _downloaded = load_downloaded()
-    log.info("Loaded %d previously downloaded filename(s) from %s.", len(_downloaded), DOWNLOADED_LOG)
+    log.info("Total skip-list size: %d file(s).", len(_downloaded))
 
     failed_urls = set() if retry_failed else load_failed_urls()
     if failed_urls:

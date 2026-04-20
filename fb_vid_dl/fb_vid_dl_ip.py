@@ -122,6 +122,14 @@ def load_downloaded() -> set[str]:
             reader = csv.DictReader(fh)
             if "filename" in (reader.fieldnames or []):
                 known |= {row["filename"].strip() for row in reader if row.get("filename")}
+            else:
+                # No header row — read positionally (col 1 = filename)
+                log.warning("downloaded.csv has no 'filename' header; reading positionally.",
+                            extra={"worker_id": "M"})
+                fh.seek(0)
+                for row in csv.reader(fh):
+                    if len(row) >= 2 and row[1].endswith(".mp4"):
+                        known.add(row[1].strip())
         log.info("Loaded %d filename(s) from %s.", len(known), os.path.abspath(DOWNLOADED_LOG),
                  extra={"worker_id": "M"})
 
